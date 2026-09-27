@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trustportidentity-beacon"
+version = "1.0.0"
+description = "Official TrustPort Beacon APM and Telemetry SDK for Python (FastAPI, Django, Flask)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "TrustPort" }]
+keywords = ["apm", "observability", "tracing", "beacon", "fastapi", "django", "flask"]
+
+[project.optional-dependencies]
+django = ["django>=4.0"]
+
+[tool.setuptools.packages.find]
+include = ["trustportidentity_beacon*"]
