@@ -43,3 +43,20 @@ BEACON_INGEST_URL = "https://beacon-api.trustportidentity.com"
 BEACON_API_KEY = "tb_live_..."
 BEACON_SERVICE_NAME = "django-service"
 ```
+
+## Controlling ingest volume
+
+Every trace is already batched (`batch_size`/`flush_interval`) instead of one network call
+per request. In high-traffic services, also set `sample_rate` (0–1, default 1.0) to trace
+only a fraction of requests — this is what actually keeps you inside your plan's monthly
+quota. Exceptions are always sent regardless of sampling.
+
+```python
+app.add_middleware(
+    BeaconMiddleware,
+    # ...
+    sample_rate=0.2,  # trace ~20% of requests
+)
+```
+
+Django: set `BEACON_SAMPLE_RATE = 0.2` in `settings.py`.
