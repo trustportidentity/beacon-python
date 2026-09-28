@@ -22,6 +22,7 @@ class BeaconMiddleware:
             service_name=getattr(settings, "BEACON_SERVICE_NAME", "django-service"),
             environment=getattr(settings, "BEACON_ENVIRONMENT", "production"),
             sanitize_pii=getattr(settings, "BEACON_SANITIZE_PII", False),
+            sample_rate=getattr(settings, "BEACON_SAMPLE_RATE", 1.0),
         )
 
     def __call__(self, request):

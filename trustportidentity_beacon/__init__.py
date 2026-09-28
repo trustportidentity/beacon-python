@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import random
 import re
 import threading
 import time
@@ -119,6 +120,7 @@ class _Client:
         batch_size: int = 50,
         flush_interval: float = 1.0,
         sanitize_pii: bool = False,
+        sample_rate: float = 1.0,
     ):
         self.ingest_url = ingest_url.rstrip("/")
         self.api_key = api_key
@@ -127,13 +129,23 @@ class _Client:
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.sanitize_pii = sanitize_pii
+        self.sample_rate = sample_rate if 0 < sample_rate <= 1 else 1.0
         self._queue: list = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def _should_sample(self, has_exception: bool) -> bool:
+        """Exceptions are always sent regardless of sample_rate - sampling controls ingest
+        volume for routine traffic, never error visibility."""
+        if has_exception or self.sample_rate >= 1:
+            return True
+        return random.random() < self.sample_rate
+
     def report(self, trace: _ActiveTrace, request: dict, duration_ms: float, exception: Optional[dict] = None) -> None:
+        if not self._should_sample(exception is not None):
+            return
         if self.sanitize_pii:
             if request.get("headers"):
                 request = {**request, "headers": _sanitize_headers(request["headers"])}
@@ -206,9 +218,10 @@ def init(
     batch_size: int = 50,
     flush_interval: float = 1.0,
     sanitize_pii: bool = False,
+    sample_rate: float = 1.0,
 ) -> _Client:
     global _client
-    _client = _Client(ingest_url, api_key, service_name, environment, batch_size, flush_interval, sanitize_pii)
+    _client = _Client(ingest_url, api_key, service_name, environment, batch_size, flush_interval, sanitize_pii, sample_rate)
     return _client
 
 
@@ -230,11 +243,12 @@ class BeaconMiddleware:
         batch_size: int = 50,
         flush_interval: float = 1.0,
         sanitize_pii: bool = False,
+        sample_rate: float = 1.0,
     ):
         self.app = app
         global _client
         if _client is None:
-            _client = _Client(ingest_url, api_key, service_name, environment, batch_size, flush_interval, sanitize_pii)
+            _client = _Client(ingest_url, api_key, service_name, environment, batch_size, flush_interval, sanitize_pii, sample_rate)
         self.client = _client
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
