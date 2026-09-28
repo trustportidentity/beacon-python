@@ -5,7 +5,7 @@ Official TrustPort Beacon APM SDK for Python.
 ## Install
 
 ```bash
-pip install git+https://github.com/trustportidentity/beacon-python.git
+pip install trustportidentity-beacon
 ```
 
 ## FastAPI / Starlette
