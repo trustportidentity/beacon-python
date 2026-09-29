@@ -6,31 +6,83 @@ import contextvars
 import json
 import random
 import re
+import secrets
 import threading
 import time
 import traceback
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional, Tuple
 from urllib import request as urllib_request
 from urllib.error import URLError
 
 __version__ = "1.0.0"
 
-_SENSITIVE_HEADERS = {"authorization", "cookie", "set-cookie"}
+_ALWAYS_SENSITIVE_HEADERS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "proxy-authorization",
+    "x-auth-token",
+    "x-csrf-token",
+    "x-xsrf-token",
+    "token",
+    "secret",
+    "password",
+}
+
 _CARD_NUMBER_RE = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
 
-def _sanitize_headers(headers: dict) -> dict:
-    return {
-        k: ("[redacted]" if k.lower() in _SENSITIVE_HEADERS else v)
-        for k, v in headers.items()
-    }
+def sanitize_headers(headers: dict) -> dict:
+    sanitized = {}
+    for k, v in headers.items():
+        lower_k = str(k).lower()
+        if (
+            lower_k in _ALWAYS_SENSITIVE_HEADERS
+            or "token" in lower_k
+            or "secret" in lower_k
+            or ("key" in lower_k and lower_k != "key")
+        ):
+            sanitized[k] = "[Filtered]"
+        else:
+            sanitized[k] = v
+    return sanitized
 
 
-def _sanitize_string(value: str) -> str:
+def sanitize_string(value: str) -> str:
     return _CARD_NUMBER_RE.sub("[redacted-card]", value)
+
+
+def generate_trace_id() -> str:
+    return secrets.token_hex(16)
+
+
+def generate_span_id() -> str:
+    return secrets.token_hex(8)
+
+
+def parse_traceparent(header: Optional[str]) -> Optional[Tuple[str, str, bool]]:
+    if not header or not isinstance(header, str):
+        return None
+    trimmed = header.strip()
+    if len(trimmed) != 55:
+        return None
+    parts = trimmed.split("-")
+    if len(parts) != 4:
+        return None
+    if len(parts[0]) != 2 or len(parts[1]) != 32 or len(parts[2]) != 16 or len(parts[3]) != 2:
+        return None
+    try:
+        int(parts[1], 16)
+        int(parts[2], 16)
+    except ValueError:
+        return None
+    if parts[1] == "0" * 32 or parts[2] == "0" * 16:
+        return None
+    return parts[1].lower(), parts[2].lower(), parts[3] == "01"
 
 
 @dataclass
@@ -39,8 +91,14 @@ class _Span:
     span_type: str
     name: str
     metadata: Optional[dict] = None
+    span_id: str = field(default_factory=generate_span_id)
+    parent_span_id: Optional[str] = None
     started_at: float = field(default_factory=time.monotonic)
     tags: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.parent_span_id is None:
+            self.parent_span_id = self.trace.span_id
 
     def set_tag(self, key: str, value: Any) -> "_Span":
         self.tags[key] = str(value)
@@ -51,6 +109,8 @@ class _Span:
         start_ms = max(0.0, (self.started_at - self.trace.started_at) * 1000)
         self.trace.spans.append(
             {
+                "span_id": self.span_id,
+                "parent_span_id": self.parent_span_id,
                 "type": self.span_type,
                 "name": self.name,
                 "start_ms": round(start_ms, 2),
@@ -68,11 +128,26 @@ class _Span:
 
 
 class _ActiveTrace:
-    def __init__(self, trace_id: Optional[str] = None):
-        self.trace_id = trace_id or str(uuid.uuid4())
+    def __init__(self, header_or_trace_id: Optional[str] = None):
+        parsed = parse_traceparent(header_or_trace_id)
+        if parsed:
+            self.trace_id = parsed[0]
+            self.parent_span_id: Optional[str] = parsed[1]
+        elif header_or_trace_id and header_or_trace_id.strip():
+            self.trace_id = header_or_trace_id.strip()
+            self.parent_span_id = None
+        else:
+            self.trace_id = generate_trace_id()
+            self.parent_span_id = None
+
+        self.span_id = generate_span_id()
         self.started_at = time.monotonic()
         self.spans: list = []
         self.user: Optional[dict] = None
+
+    @property
+    def traceparent(self) -> str:
+        return f"00-{self.trace_id}-{self.span_id}-01"
 
     def identify(self, **user: Any) -> None:
         self.user = user
@@ -95,6 +170,14 @@ def identify(**user: Any) -> None:
     trace = _current_trace.get()
     if trace is not None:
         trace.identify(**user)
+
+
+def inject_traceparent(headers: dict, trace: Optional[_ActiveTrace] = None) -> dict:
+    """Injects W3C traceparent header into outgoing HTTP headers dict."""
+    active = trace or current_trace()
+    if active:
+        headers["traceparent"] = active.traceparent
+    return headers
 
 
 @contextmanager
@@ -146,11 +229,11 @@ class _Client:
     def report(self, trace: _ActiveTrace, request: dict, duration_ms: float, exception: Optional[dict] = None) -> None:
         if not self._should_sample(exception is not None):
             return
-        if self.sanitize_pii:
-            if request.get("headers"):
-                request = {**request, "headers": _sanitize_headers(request["headers"])}
-            if request.get("url"):
-                request = {**request, "url": _sanitize_string(request["url"])}
+        
+        headers = sanitize_headers(request.get("headers") or {})
+        request = {**request, "headers": headers}
+        if self.sanitize_pii and request.get("url"):
+            request = {**request, "url": sanitize_string(request["url"])}
 
         event = {
             "id": trace.trace_id,
@@ -159,6 +242,7 @@ class _Client:
             "environment": self.environment,
             "runtime": "python",
             "trace_id": trace.trace_id,
+            "parent_span": trace.parent_span_id,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "duration_ms": round(duration_ms, 2),
             "user": trace.user,
@@ -265,6 +349,9 @@ class BeaconMiddleware:
         async def send_wrapper(message: dict) -> None:
             if message["type"] == "http.response.start":
                 status_holder["code"] = message["status"]
+                resp_headers = list(message.get("headers", []))
+                resp_headers.append((b"traceparent", trace.traceparent.encode("ascii")))
+                message["headers"] = resp_headers
             await send(message)
 
         exception_info = None
