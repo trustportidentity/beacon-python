@@ -175,6 +175,21 @@ class _ActiveTrace:
     def start_span(self, name: str, span_type: str = "custom", metadata: Optional[dict] = None) -> _Span:
         return _Span(self, span_type, name, metadata)
 
+    def start_job_span(
+        self,
+        job_name: str,
+        queue: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> _Span:
+        meta = dict(metadata or {})
+        if queue:
+            meta["queue"] = queue
+        span = _Span(self, "job", f"JOB {job_name}", meta)
+        span.set_tag("job", job_name)
+        if queue:
+            span.set_tag("queue", queue)
+        return span
+
 
 _current_trace: contextvars.ContextVar[Optional[_ActiveTrace]] = contextvars.ContextVar(
     "beacon_current_trace", default=None
@@ -219,6 +234,29 @@ def beacon_span(name: str, span_type: str = "custom", **metadata: Any) -> Iterat
     if trace is None:
         trace = _ActiveTrace()
     span = trace.start_span(name, span_type, metadata or None)
+    try:
+        yield span
+    finally:
+        span.end()
+
+
+def start_job_span(
+    job_name: str,
+    queue: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[_Span]:
+    """Start a background job or queue execution span in the active trace."""
+    trace = _current_trace.get()
+    return trace.start_job_span(job_name, queue, metadata) if trace is not None else None
+
+
+@contextmanager
+def beacon_job_span(job_name: str, queue: Optional[str] = None, **metadata: Any) -> Iterator[_Span]:
+    """Context manager for tracing background job / queue worker execution."""
+    trace = _current_trace.get()
+    if trace is None:
+        trace = _ActiveTrace()
+    span = trace.start_job_span(job_name, queue, metadata or None)
     try:
         yield span
     finally:

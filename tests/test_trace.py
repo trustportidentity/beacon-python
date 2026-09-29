@@ -92,6 +92,20 @@ class TestW3CTracingAndPII(unittest.TestCase):
         self.assertEqual(trace.breadcrumbs[1]["category"], "query")
         self.assertIsNotNone(trace.breadcrumbs[0]["timestamp"])
 
+    def test_start_job_span(self):
+        trace = _ActiveTrace()
+        span = trace.start_job_span("ProcessVideoTranscode", queue="media-workers", metadata={"resolution": "1080p"})
+        span.end()
+
+        self.assertEqual(len(trace.spans), 1)
+        s = trace.spans[0]
+        self.assertEqual(s["type"], "job")
+        self.assertEqual(s["name"], "JOB ProcessVideoTranscode")
+        self.assertEqual(s["metadata"]["queue"], "media-workers")
+        self.assertEqual(s["metadata"]["resolution"], "1080p")
+        self.assertEqual(s["tags"]["job"], "ProcessVideoTranscode")
+        self.assertEqual(s["tags"]["queue"], "media-workers")
+
 
 if __name__ == "__main__":
     unittest.main()
