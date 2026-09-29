@@ -34,6 +34,10 @@ class BeaconMiddleware:
         try:
             response = self.get_response(request)
             status_code = response.status_code
+            try:
+                response["traceparent"] = trace.traceparent
+            except Exception:
+                pass
         except Exception as exc:  # noqa: BLE001
             status_code = 500
             exception_info = {
