@@ -83,6 +83,15 @@ class TestW3CTracingAndPII(unittest.TestCase):
         inject_traceparent(headers, trace)
         self.assertEqual(headers["traceparent"], trace.traceparent)
 
+    def test_breadcrumbs(self):
+        trace = _ActiveTrace()
+        trace.add_breadcrumb("log", "User added item to cart", "info")
+        trace.add_breadcrumb("query", "SELECT * FROM inventory WHERE item_id = 42", "info", {"duration_ms": 1.2})
+        self.assertEqual(len(trace.breadcrumbs), 2)
+        self.assertEqual(trace.breadcrumbs[0]["category"], "log")
+        self.assertEqual(trace.breadcrumbs[1]["category"], "query")
+        self.assertIsNotNone(trace.breadcrumbs[0]["timestamp"])
+
 
 if __name__ == "__main__":
     unittest.main()

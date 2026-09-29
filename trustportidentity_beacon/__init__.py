@@ -143,6 +143,7 @@ class _ActiveTrace:
         self.span_id = generate_span_id()
         self.started_at = time.monotonic()
         self.spans: list = []
+        self.breadcrumbs: list = []
         self.user: Optional[dict] = None
 
     @property
@@ -151,6 +152,25 @@ class _ActiveTrace:
 
     def identify(self, **user: Any) -> None:
         self.user = user
+
+    def add_breadcrumb(
+        self,
+        category: str,
+        message: str,
+        level: str = "info",
+        data: Optional[dict] = None,
+    ) -> None:
+        self.breadcrumbs.append(
+            {
+                "category": category,
+                "message": message,
+                "level": level,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "data": data,
+            }
+        )
+        if len(self.breadcrumbs) > 100:
+            self.breadcrumbs.pop(0)
 
     def start_span(self, name: str, span_type: str = "custom", metadata: Optional[dict] = None) -> _Span:
         return _Span(self, span_type, name, metadata)
@@ -170,6 +190,18 @@ def identify(**user: Any) -> None:
     trace = _current_trace.get()
     if trace is not None:
         trace.identify(**user)
+
+
+def add_breadcrumb(
+    category: str,
+    message: str,
+    level: str = "info",
+    data: Optional[dict] = None,
+) -> None:
+    """Record a breadcrumb (log, database query, HTTP call) into the active trace."""
+    trace = _current_trace.get()
+    if trace is not None:
+        trace.add_breadcrumb(category, message, level, data)
 
 
 def inject_traceparent(headers: dict, trace: Optional[_ActiveTrace] = None) -> dict:
@@ -248,6 +280,7 @@ class _Client:
             "user": trace.user,
             "request": request,
             "spans": trace.spans,
+            "breadcrumbs": trace.breadcrumbs,
             "has_exception": exception is not None,
             "exception": exception,
         }
